@@ -20,7 +20,7 @@
 #define PIN_RX_OUT 20 
 #define PIN_TX_OUT 21
 
-HardwareSerial crsfSerialOut(0);
+HardwareSerial crsfSerialOut(1);
 AlfredoCRSF crsfOut;
 
 // Fallback method to send default channel values
@@ -153,6 +153,7 @@ void writeModelId(uint8_t addr, uint8_t modelId)
 #define ELRS_MODEL_MATCH_COMMAND        0x04
 #define ELRS_POWER_COMMAND              0x06
 #define ELRS_BLE_JOYSTIC_COMMAND        17
+#define TYPE_PING_DEVICES               0x28
 #define TYPE_SETTINGS_WRITE             0x2D
 #define ADDR_RADIO                      0xEA //  Radio Transmitter
 
@@ -166,6 +167,22 @@ void writeElrsCommand(uint8_t addr, uint8_t cmd, uint8_t value)
   packetCmd[4] = value;
 
   crsfOut.writePacket(addr, &packetCmd[0], 5);
+}
+
+void writeBroadcastPing(uint8_t addr)
+{
+  uint8_t packetCmd[3];
+
+  //packetCmd[0] = CRSF_ADDRESS_CRSF_TRANSMITTER;
+  //packetCmd[1] = 4; // length of Command (4) + payload + crc
+  //packetCmd[2] = TYPE_PING_DEVICES;
+  packetCmd[0] = CRSF_ADDRESS_BROADCAST;
+  packetCmd[1] = CRSF_ADDRESS_RADIO_TRANSMITTER;
+  //packetCmd[5] = crsf_crc8(&packetCmd[2], packetCmd[1] - 1);
+
+  crsfOut.writePacket(addr, TYPE_PING_DEVICES, &packetCmd[0], 2);
+
+  //CRSF_write(packetCmd, 6, 0);
 }
 
 // ELRS 2.0:
@@ -184,8 +201,9 @@ void writeElrsCommand(uint8_t addr, uint8_t cmd, uint8_t value)
 #define SETTING_3_PktRate 3 // 500Hz
 #define SETTING_3_Power 1   // 25mW
 
-#define CRSF_TIME_BETWEEN_FRAMES_US     4000 // 4 ms 250Hz
-//#define CRSF_TIME_BETWEEN_FRAMES_US     1666 // 1.6 ms 500Hz
+//#define CRSF_TIME_BETWEEN_FRAMES_US     4000 // 4 ms 250Hz
+#define CRSF_TIME_BETWEEN_FRAMES_US     3003 // 3.003 ms 333Hz
+//#define CRSF_TIME_BETWEEN_FRAMES_US     2000 // 2 ms 500Hz
 
 typedef enum
 {
@@ -238,6 +256,43 @@ typedef enum
  *
  */
 
+void ICACHE_RAM_ATTR duplex_set_RX()
+{
+  portDISABLE_INTERRUPTS();
+  ESP_ERROR_CHECK(gpio_set_direction((gpio_num_t)PIN_RX_OUT, GPIO_MODE_INPUT));
+#if GPIO_PIN_RCSIGNAL_UART_INV
+  gpio_matrix_in((gpio_num_t)PIN_RX_OUT, U1RXD_IN_IDX, true);
+  gpio_pulldown_en((gpio_num_t)PIN_RX_OUT);
+  gpio_pullup_dis((gpio_num_t)PIN_RX_OUT);
+#else
+  gpio_matrix_in((gpio_num_t)PIN_RX_OUT, U1RXD_IN_IDX, false);
+  gpio_pullup_en((gpio_num_t)PIN_RX_OUT);
+  gpio_pulldown_dis((gpio_num_t)PIN_RX_OUT);
+#endif
+  portENABLE_INTERRUPTS();
+}
+
+void ICACHE_RAM_ATTR duplex_set_TX()
+{
+  portDISABLE_INTERRUPTS();
+  ESP_ERROR_CHECK(gpio_set_pull_mode((gpio_num_t)PIN_TX_OUT, GPIO_FLOATING));
+  ESP_ERROR_CHECK(gpio_set_pull_mode((gpio_num_t)PIN_RX_OUT, GPIO_FLOATING));
+#if GPIO_PIN_RCSIGNAL_UART_INV
+  ESP_ERROR_CHECK(gpio_set_level((gpio_num_t)PIN_TX_OUT, 0));
+  ESP_ERROR_CHECK(gpio_set_direction((gpio_num_t)PIN_TX_OUT, GPIO_MODE_OUTPUT));
+  constexpr uint8_t MATRIX_DETACH_IN_LOW = 0x30;             // routes 0 to matrix slot
+  gpio_matrix_in(MATRIX_DETACH_IN_LOW, U1RXD_IN_IDX, false); // Disconnect RX from all pads
+  gpio_matrix_out((gpio_num_t)PIN_TX_OUT, U1TXD_OUT_IDX, true, false);
+#else
+  ESP_ERROR_CHECK(gpio_set_level((gpio_num_t)PIN_TX_OUT, 1));
+  ESP_ERROR_CHECK(gpio_set_direction((gpio_num_t)PIN_TX_OUT, GPIO_MODE_OUTPUT));
+  constexpr uint8_t MATRIX_DETACH_IN_HIGH = 0x38;             // routes 1 to matrix slot
+  gpio_matrix_in(MATRIX_DETACH_IN_HIGH, U1RXD_IN_IDX, false); // Disconnect RX from all pads
+  gpio_matrix_out((gpio_num_t)PIN_TX_OUT, U1TXD_OUT_IDX, false, false);
+#endif
+  portENABLE_INTERRUPTS();
+}
+
 hw_timer_t *timer1 = NULL;
 portMUX_TYPE timerMux1 = portMUX_INITIALIZER_UNLOCKED;
 
@@ -262,7 +317,7 @@ void setup() {
   timerAlarmWrite(timer1, 1000000L, true);            // 1000000 * 1us = 1000ms, single shot
   timerAlarmEnable(timer1); // start
 
-  crsfSerialOut.begin(CRSF_BAUDRATE, SERIAL_8N1, PIN_RX_OUT, PIN_TX_OUT);  
+  crsfSerialOut.begin(CRSF_BAUDRATE, SERIAL_8N1, PIN_RX_OUT, PIN_TX_OUT, false, 500); // None invert, 500ms timeout  
   crsfOut.begin(crsfSerialOut);
 }
 
@@ -278,29 +333,51 @@ void loop() {
       for(int i=0;i<CRSF_NUM_CHANNELS;++i) {
         channels[i] = 2000;
       }
+      duplex_set_TX();
       sendChannels(CRSF_ADDRESS_CRSF_TRANSMITTER, channels);
-      Serial.printf(".");
-      Serial.flush();
+      //Serial.printf(".");
+      //Serial.flush();
+      //delayMicroseconds(CRSF_TIME_BETWEEN_FRAMES_US);
+      //writeBroadcastPing(CRSF_ADDRESS_CRSF_TRANSMITTER);
     } else {
       if(loopCount <= 500) { // repeat 500 packets to build connection to TX module
+	duplex_set_TX();
 	sendFallbackChannels(CRSF_ADDRESS_CRSF_TRANSMITTER);
 	loopCount++;
       } else if(loopCount > 500 && loopCount <= 505) {
+        duplex_set_TX();
         writeElrsCommand(CRSF_ADDRESS_CRSF_TRANSMITTER, ELRS_PKT_RATE_COMMAND, PKR_333Hz); // Not work yet @@
         loopCount++;
       } else if(loopCount > 505 && loopCount <= 510) {
+        duplex_set_TX();
         writeElrsCommand(CRSF_ADDRESS_CRSF_TRANSMITTER, ELRS_POWER_COMMAND, PWR_500mW); // Not work yet @@
         loopCount++;
-    /*
       } else if(loopCount > 510 && loopCount <= 515) {
-        writeModelId(CRSF_ADDRESS_CRSF_TRANSMITTER, 3); // 0xC8
+        duplex_set_TX();
+        //writeModelId(CRSF_ADDRESS_CRSF_TRANSMITTER, 3); // 0xC8
+        writeBroadcastPing(CRSF_ADDRESS_CRSF_TRANSMITTER);
 	loopCount++;
-    */
+      } else {
+        duplex_set_TX();
+        sendFallbackChannels(CRSF_ADDRESS_CRSF_TRANSMITTER);
       }
-
-      sendFallbackChannels(CRSF_ADDRESS_CRSF_TRANSMITTER);
     }
     lastUpdate = timeNow;
   }
+  
+  duplex_set_RX();
+  crsfOut.update();
+  
+/*  
+  uint32_t rx_count = 0;
+  while(crsfSerialOut.available() > 0) {
+    byte c = crsfSerialOut.read();
+    Serial.printf("0x%02x ", c);
+    Serial.flush();
+    rx_count++;
+  }
+  if(rx_count > 0)
+    Serial.printf("\r\n");
+*/
 }
 
