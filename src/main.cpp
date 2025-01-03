@@ -17,8 +17,9 @@
 #include <AlfredoCRSF.h>
 #include <HardwareSerial.h>
 
-#define PIN_RX_OUT 20 
+#define PIN_RX_OUT 21
 #define PIN_TX_OUT 21
+#define GPIO_PIN_RCSIGNAL_UART_INV false
 
 HardwareSerial crsfSerialOut(1);
 AlfredoCRSF crsfOut;
@@ -258,39 +259,47 @@ typedef enum
 
 void ICACHE_RAM_ATTR duplex_set_RX()
 {
+#if 1
   portDISABLE_INTERRUPTS();
   ESP_ERROR_CHECK(gpio_set_direction((gpio_num_t)PIN_RX_OUT, GPIO_MODE_INPUT));
 #if GPIO_PIN_RCSIGNAL_UART_INV
+  //gpio_matrix_out((gpio_num_t)PIN_TX_OUT, SIG_GPIO_OUT_IDX, true, true); // Detach TX & invertOut (Map out pin to gpio)
   gpio_matrix_in((gpio_num_t)PIN_RX_OUT, U1RXD_IN_IDX, true);
   gpio_pulldown_en((gpio_num_t)PIN_RX_OUT);
   gpio_pullup_dis((gpio_num_t)PIN_RX_OUT);
 #else
+  //gpio_matrix_out((gpio_num_t)PIN_TX_OUT, SIG_GPIO_OUT_IDX, false, false); // Detach TX (Map out pin to gpio)
   gpio_matrix_in((gpio_num_t)PIN_RX_OUT, U1RXD_IN_IDX, false);
   gpio_pullup_en((gpio_num_t)PIN_RX_OUT);
   gpio_pulldown_dis((gpio_num_t)PIN_RX_OUT);
 #endif
   portENABLE_INTERRUPTS();
+#endif
 }
 
 void ICACHE_RAM_ATTR duplex_set_TX()
 {
+#if 1
   portDISABLE_INTERRUPTS();
   ESP_ERROR_CHECK(gpio_set_pull_mode((gpio_num_t)PIN_TX_OUT, GPIO_FLOATING));
-  ESP_ERROR_CHECK(gpio_set_pull_mode((gpio_num_t)PIN_RX_OUT, GPIO_FLOATING));
+  //ESP_ERROR_CHECK(gpio_set_pull_mode((gpio_num_t)PIN_RX_OUT, GPIO_FLOATING));
 #if GPIO_PIN_RCSIGNAL_UART_INV
   ESP_ERROR_CHECK(gpio_set_level((gpio_num_t)PIN_TX_OUT, 0));
   ESP_ERROR_CHECK(gpio_set_direction((gpio_num_t)PIN_TX_OUT, GPIO_MODE_OUTPUT));
-  constexpr uint8_t MATRIX_DETACH_IN_LOW = 0x30;             // routes 0 to matrix slot
+  //constexpr uint8_t MATRIX_DETACH_IN_LOW = 0x30;             // routes 0 to matrix slot
+  constexpr uint8_t MATRIX_DETACH_IN_LOW = GPIO_FUNC_IN_LOW;
   gpio_matrix_in(MATRIX_DETACH_IN_LOW, U1RXD_IN_IDX, false); // Disconnect RX from all pads
-  gpio_matrix_out((gpio_num_t)PIN_TX_OUT, U1TXD_OUT_IDX, true, false);
+  gpio_matrix_out((gpio_num_t)PIN_TX_OUT, U1TXD_OUT_IDX, true, false); // Attach TX & invertOut (Map ou pin to U1TXD)
 #else
   ESP_ERROR_CHECK(gpio_set_level((gpio_num_t)PIN_TX_OUT, 1));
   ESP_ERROR_CHECK(gpio_set_direction((gpio_num_t)PIN_TX_OUT, GPIO_MODE_OUTPUT));
-  constexpr uint8_t MATRIX_DETACH_IN_HIGH = 0x38;             // routes 1 to matrix slot
+  //constexpr uint8_t MATRIX_DETACH_IN_HIGH = 0x38;             // routes 1 to matrix slot
+  constexpr uint8_t MATRIX_DETACH_IN_HIGH = GPIO_FUNC_IN_HIGH;
   gpio_matrix_in(MATRIX_DETACH_IN_HIGH, U1RXD_IN_IDX, false); // Disconnect RX from all pads
-  gpio_matrix_out((gpio_num_t)PIN_TX_OUT, U1TXD_OUT_IDX, false, false);
+  gpio_matrix_out((gpio_num_t)PIN_TX_OUT, U1TXD_OUT_IDX, false, false); // Attach TX (Map ou pin to U1TXD)
 #endif
   portENABLE_INTERRUPTS();
+#endif
 }
 
 hw_timer_t *timer1 = NULL;
@@ -365,10 +374,12 @@ void loop() {
     lastUpdate = timeNow;
   }
   
-  duplex_set_RX();
-  crsfOut.update();
+  crsfSerialOut.flush();
   
-/*  
+  duplex_set_RX();
+#if 1
+  crsfOut.update();
+#else  
   uint32_t rx_count = 0;
   while(crsfSerialOut.available() > 0) {
     byte c = crsfSerialOut.read();
@@ -378,6 +389,6 @@ void loop() {
   }
   if(rx_count > 0)
     Serial.printf("\r\n");
-*/
+#endif
 }
 
